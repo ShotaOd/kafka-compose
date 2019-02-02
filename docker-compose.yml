@@ -1,0 +1,77 @@
+version: '3'
+services:
+  # ==================================================
+  # kafka Orchestration
+  # ==================================================
+  # kafka.local for network space(by using pause container)
+  # ------------------------------
+  kafka.local:
+    image: gcr.io/google-containers/pause:3.1
+    ports:
+      - 2181:2181
+      - 9092-9102:9092-9102
+  zookeeper:
+    image: zookeeper:3.4
+    pid: service:kafka.local
+    network_mode: service:kafka.local
+    depends_on:
+      - kafka.local
+  kafka_root:
+    image: wurstmeister/kafka:2.11-2.0.0
+    environment:
+      HOSTNAME_COMMAND: 'echo kafka.local'
+      PORT_COMMAND: 'echo 9092'
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:_{PORT_COMMAND}
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://_{HOSTNAME_COMMAND}:_{PORT_COMMAND}
+      KAFKA_ZOOKEEPER_CONNECT: localhost:2181
+    pid: service:kafka.local
+    network_mode: service:kafka.local
+    depends_on:
+      - zookeeper
+  kafka_node:
+    image: wurstmeister/kafka:2.11-2.0.0
+    # -v docker.sock
+    # only for local, it is very !!dangerous!!
+    # local convenience for detecting free port
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      HOSTNAME_COMMAND: 'echo kafka.local'
+      # find free port by getting diff <port vs docker> port
+      PORT_COMMAND: "diff <(netstat -tl | awk 'NR>2 {print $$4}' | cut -d: -f2 | sort -n) <(hostname | xargs -IHOST docker port HOST  | cut -d: -f2 | sort -n) | grep -E '^\\+[0-9].*' | shuf | head -n1 | cut -d+ -f2"
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:_{PORT_COMMAND}
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://_{HOSTNAME_COMMAND}:_{PORT_COMMAND}
+      KAFKA_ZOOKEEPER_CONNECT: localhost:2181
+      # TODO: JMX is not available... due to Competing port
+      # KAFKA_JMX_OPTS: "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.rmi.port=1099"
+      # JMX_PORT: 1099
+    pid: service:kafka.local
+    network_mode: service:kafka.local
+    depends_on:
+      - kafka_root
+  # kafka utilities
+  kafkacat:
+    image: solsson/kafkacat
+  trifecta:
+    image: janschultecom/docker-trifecta
+    ports:
+    - 9001:9000
+    environment:
+      ZK_HOST: kafka.local:2181
+    depends_on:
+    - kafka_root
+    - kafka_node
+  kafka_manager:
+    build: ./kafka_manager
+    ports:
+    - "9000:9000"
+    volumes:
+    # for cache, caz sbt dependency resolution take sooooo much time
+    - ./kafka_manager/build:/opt/kafka_manager
+    - ~/.sbt:/root/.sbt
+    - ~/.ivy2:/root/.ivy2
+    depends_on:
+    - kafka_root
+    - kafka_node
+    environment:
+      ZK_HOSTS: kafka.local:2181
